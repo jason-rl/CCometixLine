@@ -72,7 +72,7 @@ impl Segment for ContextWindowSegment {
         metadata.insert("model".to_string(), input.model.id.clone());
 
         Some(SegmentData {
-            primary: format!("{} · {} tokens", percentage_display, tokens_display),
+            primary: format!("{} · {} 🪙", percentage_display, tokens_display),
             secondary: String::new(),
             metadata,
         })
