@@ -1,5 +1,5 @@
 use super::{Segment, SegmentData};
-use crate::config::{InputData, SegmentId};
+use crate::config::{InputData, SegmentId, StyleMode};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -21,6 +21,7 @@ pub enum GitStatus {
 
 pub struct GitSegment {
     show_sha: bool,
+    mode: StyleMode,
 }
 
 impl Default for GitSegment {
@@ -31,11 +32,19 @@ impl Default for GitSegment {
 
 impl GitSegment {
     pub fn new() -> Self {
-        Self { show_sha: false }
+        Self {
+            show_sha: false,
+            mode: StyleMode::Plain,
+        }
     }
 
     pub fn with_sha(mut self, show_sha: bool) -> Self {
         self.show_sha = show_sha;
+        self
+    }
+
+    pub fn with_mode(mut self, mode: StyleMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -44,9 +53,13 @@ impl GitSegment {
             return None;
         }
 
-        let branch = self
-            .get_branch(working_dir)
-            .unwrap_or_else(|| "detached".to_string());
+        let branch = self.get_branch(working_dir).unwrap_or_else(|| {
+            if self.mode != StyleMode::Plain {
+                "\u{f127}".to_string() // nf-fa-chain_broken: detached HEAD
+            } else {
+                "detached".to_string()
+            }
+        });
         let status = self.get_status(working_dir);
         let (ahead, behind) = self.get_ahead_behind(working_dir);
         let sha = if self.show_sha {
