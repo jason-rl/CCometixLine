@@ -28,6 +28,16 @@ pub struct ContextModifier {
     pub context_limit: u32,
 }
 
+/// Structured display info for a recognized built-in Claude model.
+/// Only returned for the three built-in families (Sonnet, Opus, Haiku).
+#[derive(Debug, Clone)]
+pub struct ModelDisplay {
+    pub plain: String,  // e.g. "Opus 4" or "Opus 4 1M"
+    pub glyph: String,  // Nerd Font alpha glyph, e.g. "\u{f0afc}"
+    pub rest: String,   // version + modifier, e.g. "4" or "4 1M"
+    pub family: String, // lowercase keyword, e.g. "opus"
+}
+
 /// Built-in Claude model family definition (internal, not serialized).
 /// Uses regex with named capture groups to auto-extract version numbers from model IDs.
 ///
@@ -37,6 +47,7 @@ pub struct ContextModifier {
 struct BuiltinModelFamily {
     regex: Regex,
     display_prefix: String,
+    display_glyph: String,
     context_limit: u32,
 }
 
@@ -53,7 +64,7 @@ impl BuiltinModelFamily {
     /// The boundary is consumed but only named capture groups are used for version extraction.
     /// Rust's `regex` crate does not support lookahead, so the NFA engine's natural
     /// backtracking prevents date digits from being captured as minor version numbers.
-    fn new(keyword: &str, display_prefix: &str, context_limit: u32) -> Self {
+    fn new(keyword: &str, display_prefix: &str, display_glyph: &str, context_limit: u32) -> Self {
         let pattern = format!(
             r"(?:(?P<pre_major>\d{{1,2}})(?:-(?P<pre_minor>\d{{1,2}}))?-{kw}|{kw}-(?P<post_major>\d{{1,2}})(?:-(?P<post_minor>\d{{1,2}}))?)(?:-\d{{3,}}|-[a-z]|\[|$)",
             kw = keyword
@@ -61,13 +72,14 @@ impl BuiltinModelFamily {
         Self {
             regex: Regex::new(&pattern).expect("built-in family regex should compile"),
             display_prefix: display_prefix.to_string(),
+            display_glyph: display_glyph.to_string(),
             context_limit,
         }
     }
 
-    /// Try to match a model ID (already lowercased) and extract a formatted display name.
+    /// Try to match a model ID (already lowercased) and extract a ModelDisplay.
     /// Returns `None` if the model ID doesn't match this family.
-    fn match_model(&self, model_id_lower: &str) -> Option<String> {
+    fn match_model(&self, model_id_lower: &str) -> Option<ModelDisplay> {
         let caps = self.regex.captures(model_id_lower)?;
 
         let major = caps
@@ -85,7 +97,12 @@ impl BuiltinModelFamily {
             None => major.to_string(),
         };
 
-        Some(format!("{} {}", self.display_prefix, version))
+        Some(ModelDisplay {
+            plain: format!("{} {}", self.display_prefix, version),
+            glyph: self.display_glyph.clone(),
+            rest: version,
+            family: self.display_prefix.to_lowercase(),
+        })
     }
 }
 
@@ -99,20 +116,20 @@ impl ModelConfig {
     fn builtin_families() -> &'static [BuiltinModelFamily] {
         BUILTIN_FAMILIES.get_or_init(|| {
             vec![
-                BuiltinModelFamily::new("sonnet", "Sonnet", 200_000),
-                BuiltinModelFamily::new("opus", "Opus", 200_000),
-                BuiltinModelFamily::new("haiku", "Haiku", 200_000),
+                BuiltinModelFamily::new("sonnet", "Sonnet", "\u{f0b00}", 200_000),
+                BuiltinModelFamily::new("opus", "Opus", "\u{f0afc}", 200_000),
+                BuiltinModelFamily::new("haiku", "Haiku", "\u{f0af5}", 200_000),
             ]
         })
     }
 
     /// Try to match a model ID against built-in Claude model families.
-    /// Returns `(display_name, context_limit)` if matched.
-    fn match_builtin_family(model_id: &str) -> Option<(String, u32)> {
+    /// Returns `(ModelDisplay, context_limit)` if matched.
+    fn match_builtin_family(model_id: &str) -> Option<(ModelDisplay, u32)> {
         let model_lower = model_id.to_lowercase();
         for family in Self::builtin_families() {
-            if let Some(name) = family.match_model(&model_lower) {
-                return Some((name, family.context_limit));
+            if let Some(display) = family.match_model(&model_lower) {
+                return Some((display, family.context_limit));
             }
         }
         None
@@ -188,7 +205,7 @@ impl ModelConfig {
             .map(|e| (Some(e.display_name.clone()), Some(e.context_limit)))
             .unwrap_or_else(|| {
                 Self::match_builtin_family(model_id)
-                    .map(|(name, limit)| (Some(name), Some(limit)))
+                    .map(|(display, limit)| (Some(display.plain), Some(limit)))
                     .unwrap_or((None, None))
             });
 
@@ -248,6 +265,32 @@ impl ModelConfig {
     pub fn get_display_suffix(&self, model_id: &str) -> Option<String> {
         let (_, _, suffix) = self.resolve(model_id);
         suffix
+    }
+
+    /// Get structured display info for a built-in Claude model family.
+    /// Returns `None` for user model_entries and unknown models (they have no glyph).
+    /// Applies any matching context modifier suffix to both `plain` and `rest`.
+    pub fn get_model_display(&self, model_id: &str) -> Option<ModelDisplay> {
+        let model_lower = model_id.to_lowercase();
+        // User entries take priority and have no glyph
+        if self
+            .model_entries
+            .iter()
+            .any(|e| model_lower.contains(&e.pattern.to_lowercase()))
+        {
+            return None;
+        }
+        let (mut display, _) = Self::match_builtin_family(model_id)?;
+        // Apply context modifier suffix if any
+        if let Some(modifier) = self
+            .context_modifiers
+            .iter()
+            .find(|m| model_lower.contains(&m.pattern.to_lowercase()))
+        {
+            display.plain = format!("{}{}", display.plain, modifier.display_suffix);
+            display.rest = format!("{}{}", display.rest, modifier.display_suffix);
+        }
+        Some(display)
     }
 
     /// Create default model configuration file with minimal template
