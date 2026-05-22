@@ -15,6 +15,8 @@ pub struct Config {
 pub struct StyleConfig {
     pub mode: StyleMode,
     pub separator: String,
+    #[serde(default)]
+    pub right_aligned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -248,6 +250,7 @@ impl Config {
         // Compare style config
         if self.style.mode != theme_preset.style.mode
             || self.style.separator != theme_preset.style.separator
+            || self.style.right_aligned != theme_preset.style.right_aligned
         {
             return false;
         }

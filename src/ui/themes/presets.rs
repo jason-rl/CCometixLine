@@ -127,6 +127,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: " | ".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_cometix::model_segment(),
@@ -148,6 +149,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::Plain,
                 separator: " | ".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_default::model_segment(),
@@ -169,6 +171,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::Plain,
                 separator: " │ ".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_minimal::model_segment(),
@@ -190,6 +193,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: " | ".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_gruvbox::model_segment(),
@@ -211,6 +215,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: "".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_nord::model_segment(),
@@ -232,6 +237,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: "".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_powerline_dark::model_segment(),
@@ -253,6 +259,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: "".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_powerline_light::model_segment(),
@@ -274,6 +281,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: "".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_powerline_rose_pine::model_segment(),
@@ -295,6 +303,7 @@ impl ThemePresets {
             style: StyleConfig {
                 mode: StyleMode::NerdFont,
                 separator: "".to_string(),
+                right_aligned: false,
             },
             segments: vec![
                 theme_powerline_tokyo_night::model_segment(),
