@@ -667,9 +667,20 @@ pub fn collect_all_segments(
                     .get("show_sha")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let branch_prefixes = segment_config
+                    .options
+                    .get("branch_prefixes")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let segment = GitSegment::new()
                     .with_sha(show_sha)
-                    .with_mode(config.style.mode);
+                    .with_mode(config.style.mode)
+                    .with_branch_prefixes(branch_prefixes);
                 segment.collect(input)
             }
             crate::config::SegmentId::ContextWindow => {

@@ -149,6 +149,7 @@ pub enum GitStatus {
 pub struct GitSegment {
     show_sha: bool,
     mode: StyleMode,
+    branch_prefixes: HashMap<String, String>,
 }
 
 impl Default for GitSegment {
@@ -162,6 +163,7 @@ impl GitSegment {
         Self {
             show_sha: false,
             mode: StyleMode::Plain,
+            branch_prefixes: HashMap::new(),
         }
     }
 
@@ -173,6 +175,33 @@ impl GitSegment {
     pub fn with_mode(mut self, mode: StyleMode) -> Self {
         self.mode = mode;
         self
+    }
+
+    pub fn with_branch_prefixes(mut self, prefixes: HashMap<String, String>) -> Self {
+        self.branch_prefixes = prefixes;
+        self
+    }
+
+    /// Replace the longest matching branch prefix with its configured value.
+    /// Matching is longest-first so `"feat/long/"` beats `"feat/"` when both apply.
+    fn apply_branch_prefix(&self, branch: &str) -> String {
+        if self.branch_prefixes.is_empty() {
+            return branch.to_string();
+        }
+        // Sort candidates by prefix length (longest first) for deterministic match
+        let mut candidates: Vec<(&str, &str)> = self
+            .branch_prefixes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        candidates.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
+
+        for (prefix, replacement) in candidates {
+            if let Some(rest) = branch.strip_prefix(prefix) {
+                return format!("{}{}", replacement, rest);
+            }
+        }
+        branch.to_string()
     }
 
     fn get_git_info(&self, working_dir: &str) -> Option<GitInfo> {
@@ -514,6 +543,10 @@ impl Segment for GitSegment {
         if let Some(url) = self.get_github_branch_url(&input.workspace.current_dir, &primary) {
             metadata.insert("hyperlink_url".to_string(), url);
         }
+
+        // Apply prefix substitution for display AFTER the hyperlink URL is set,
+        // so the link always points to the real remote branch regardless of display labels.
+        let primary = self.apply_branch_prefix(&primary);
 
         Some(SegmentData {
             primary,
