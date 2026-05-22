@@ -1,7 +1,7 @@
 use crate::config::{AnsiColor, Config, SegmentConfig, StyleMode};
 use crate::core::segments::SegmentData;
 
-/// Strip ANSI escape sequences and return visible text length
+/// Strip ANSI escape sequences and return visible text length (in chars, not cells).
 fn visible_width(text: &str) -> usize {
     let mut visible = String::new();
     let mut in_escape = false;
@@ -29,6 +29,29 @@ fn visible_width(text: &str) -> usize {
     visible.chars().count()
 }
 
+/// Strip ANSI escape sequences and return terminal cell width (emoji = 2 cells).
+fn display_width(text: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    let mut visible = String::new();
+    let mut in_escape = false;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            in_escape = true;
+            if chars.peek() == Some(&'[') {
+                chars.next();
+            }
+        } else if in_escape {
+            if ch.is_alphabetic() {
+                in_escape = false;
+            }
+        } else {
+            visible.push(ch);
+        }
+    }
+    UnicodeWidthStr::width(visible.as_str())
+}
+
 pub struct StatusLineGenerator {
     config: Config,
 }
@@ -39,12 +62,25 @@ impl StatusLineGenerator {
     }
 
     pub fn generate(&self, segments: Vec<(SegmentConfig, SegmentData)>) -> String {
-        let mut output = Vec::new();
-        let enabled_segments: Vec<_> = segments
-            .into_iter()
-            .filter(|(config, _)| config.enabled)
-            .collect();
+        use crate::config::SegmentId;
+        use crate::core::segments::mcp;
 
+        // Partition: Mcp goes on its own line; everything else on line 1
+        let mut mcp_entry: Option<(SegmentConfig, SegmentData)> = None;
+        let mut enabled_segments: Vec<(SegmentConfig, SegmentData)> = Vec::new();
+
+        for (config, data) in segments {
+            if !config.enabled {
+                continue;
+            }
+            if config.id == SegmentId::Mcp {
+                mcp_entry = Some((config, data));
+            } else {
+                enabled_segments.push((config, data));
+            }
+        }
+
+        let mut output = Vec::new();
         for (config, data) in enabled_segments.iter() {
             let rendered = self.render_segment(config, data);
             if !rendered.is_empty() {
@@ -52,17 +88,99 @@ impl StatusLineGenerator {
             }
         }
 
-        if output.is_empty() {
-            return String::new();
-        }
-
-        // Handle Powerline arrow separators with color transition
-        if self.config.style.separator == "\u{e0b0}" {
+        let line1 = if output.is_empty() {
+            String::new()
+        } else if self.config.style.separator == "\u{e0b0}" {
             self.join_with_powerline_arrows(&output, &enabled_segments)
         } else {
-            // For all other separators, use white color and simple join
             self.join_with_white_separators(&output)
+        };
+
+        // Right-justify line 1 when configured
+        let line1 = if self.config.style.right_aligned {
+            if let Ok((cols, _)) = crossterm::terminal::size() {
+                let cols = cols as usize;
+                let w = display_width(&line1);
+                let pad = cols.saturating_sub(w);
+                if pad > 0 {
+                    format!("{}{}", " ".repeat(pad), line1)
+                } else {
+                    line1
+                }
+            } else {
+                line1
+            }
+        } else {
+            line1
+        };
+
+        // Build optional MCP second line
+        if let Some((mcp_cfg, mcp_data)) = mcp_entry {
+            if let Some(raw) = mcp_data.metadata.get("mcp_servers") {
+                let names: Vec<String> = raw.split('\u{1f}').map(|s| s.to_string()).collect();
+
+                // Plug glyph conforms to powerline styling on line 1.
+                // Background borrowed from the leading line-1 segment so it auto-matches
+                // the active theme without any config edits.
+                let plug_bg = mcp_cfg.colors.background.clone().or_else(|| {
+                    enabled_segments
+                        .first()
+                        .and_then(|(c, _)| c.colors.background.clone())
+                });
+
+                let icon_glyph = self.get_icon(&mcp_cfg);
+                let icon_segment = if let Some(ref bg) = plug_bg {
+                    let bg_code = self.apply_background_color(bg);
+                    let icon_colored = if let Some(icon_color) = &mcp_cfg.colors.icon {
+                        self.apply_color(&icon_glyph, Some(icon_color))
+                            .replace("\x1b[0m", "")
+                    } else {
+                        icon_glyph
+                    };
+                    let block = format!("{} {} \x1b[49m", bg_code, icon_colored);
+                    if self.config.style.separator == "\u{e0b0}" {
+                        let arrow = self.create_powerline_arrow(Some(bg), None);
+                        format!("{}{}", block, arrow)
+                    } else {
+                        block
+                    }
+                } else {
+                    self.apply_color(&icon_glyph, mcp_cfg.colors.icon.as_ref())
+                };
+
+                // Multi-line wrapping: query terminal width and compute budgets
+                let term_width = crossterm::terminal::size().ok().map(|(c, _)| c as usize);
+                let first_line_budget = term_width
+                    .map(|w| w.saturating_sub(display_width(&icon_segment) + 1))
+                    .unwrap_or(usize::MAX);
+                let body_lines = mcp::render_servers_lines(
+                    &names,
+                    self.config.style.mode,
+                    term_width,
+                    first_line_budget,
+                );
+
+                let mcp_line = if body_lines.len() <= 1 {
+                    format!(
+                        "{} {}",
+                        icon_segment,
+                        body_lines.first().map(|s| s.as_str()).unwrap_or("")
+                    )
+                } else {
+                    let first = format!("{} {}", icon_segment, body_lines[0]);
+                    let rest = body_lines[1..].join("\n");
+                    format!("{}\n{}", first, rest)
+                };
+
+                return if line1.is_empty() {
+                    mcp_line
+                } else {
+                    format!("{}\n{}", line1, mcp_line)
+                };
+            }
         }
+
+        line1
     }
 
     /// Generate statusline for TUI preview with proper width calculation
@@ -74,7 +192,8 @@ impl StatusLineGenerator {
         use ansi_to_tui::IntoText;
         use ratatui::text::{Line, Span};
 
-        // Use the same generate method and convert to TUI
+        // Use the same generate method and convert to TUI.
+        // Note: only the first line is returned; the MCP second line is intentionally dropped.
         let full_output = self.generate(segments);
 
         if let Ok(text) = full_output.into_text() {
@@ -96,9 +215,11 @@ impl StatusLineGenerator {
         use ansi_to_tui::IntoText;
         use ratatui::text::{Line, Span, Text};
 
+        // Mcp renders on a second physical line (via generate()); the TUI preview is
+        // single-line only, so exclude it here to avoid invisible/broken rendering.
         let enabled_segments: Vec<_> = segments
             .into_iter()
-            .filter(|(config, _)| config.enabled)
+            .filter(|(config, _)| config.enabled && config.id != crate::config::SegmentId::Mcp)
             .collect();
 
         if enabled_segments.is_empty() {
@@ -220,6 +341,46 @@ impl StatusLineGenerator {
             self.get_icon(config)
         };
 
+        // Two-tone model glyph: colored glyph + normal-colored version number.
+        // Uses no-inner-reset to survive the bg-theme \x1b[0m stripping below.
+        let two_tone_primary: Option<String> = if self.config.style.mode != StyleMode::Plain {
+            if let (Some(glyph), Some(rest), Some(family)) = (
+                data.metadata.get("model_glyph"),
+                data.metadata.get("model_rest"),
+                data.metadata.get("model_family"),
+            ) {
+                let glyph_color = match family.as_str() {
+                    "opus" => (255u8, 191u8, 0u8),
+                    "sonnet" => (0u8, 188u8, 212u8),
+                    "haiku" => (76u8, 175u8, 80u8),
+                    _ => (255u8, 255u8, 255u8),
+                };
+                let text_color = match &config.colors.text {
+                    Some(AnsiColor::Rgb { r, g, b }) => {
+                        format!("\x1b[38;2;{};{};{}m", r, g, b)
+                    }
+                    Some(AnsiColor::Color256 { c256 }) => {
+                        format!("\x1b[38;5;{}m", c256)
+                    }
+                    Some(AnsiColor::Color16 { c16 }) => {
+                        let code = if *c16 < 8 { 30 + c16 } else { 90 + (c16 - 8) };
+                        format!("\x1b[{}m", code)
+                    }
+                    None => String::new(),
+                };
+                Some(format!(
+                    "\x1b[38;2;{};{};{}m{} {}{}",
+                    glyph_color.0, glyph_color.1, glyph_color.2, glyph, text_color, rest
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let primary_text = two_tone_primary.as_deref().unwrap_or(&data.primary);
+
         // Apply background color to the entire segment if set
         if let Some(bg_color) = &config.colors.background {
             let bg_code = self.apply_background_color(bg_color);
@@ -232,13 +393,17 @@ impl StatusLineGenerator {
                 icon.clone()
             };
 
-            let text_styled = self
-                .apply_style(
-                    &data.primary,
+            let text_styled = if two_tone_primary.is_some() {
+                // Already has embedded color codes; strip only trailing reset so bg path works
+                primary_text.replace("\x1b[0m", "")
+            } else {
+                self.apply_style(
+                    primary_text,
                     config.colors.text.as_ref(),
                     config.styles.text_bold,
                 )
-                .replace("\x1b[0m", "");
+                .replace("\x1b[0m", "")
+            };
 
             let mut segment_content = format!(" {} {} ", icon_colored, text_styled);
 
@@ -258,11 +423,15 @@ impl StatusLineGenerator {
         } else {
             // No background color, use original logic
             let icon_colored = self.apply_color(&icon, config.colors.icon.as_ref());
-            let text_styled = self.apply_style(
-                &data.primary,
-                config.colors.text.as_ref(),
-                config.styles.text_bold,
-            );
+            let text_styled = if two_tone_primary.is_some() {
+                format!("{}\x1b[0m", primary_text)
+            } else {
+                self.apply_style(
+                    primary_text,
+                    config.colors.text.as_ref(),
+                    config.styles.text_bold,
+                )
+            };
 
             let mut segment = format!("{} {}", icon_colored, text_styled);
 
@@ -482,7 +651,9 @@ pub fn collect_all_segments(
                     .get("show_sha")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let segment = GitSegment::new().with_sha(show_sha);
+                let segment = GitSegment::new()
+                    .with_sha(show_sha)
+                    .with_mode(config.style.mode);
                 segment.collect(input)
             }
             crate::config::SegmentId::ContextWindow => {
@@ -507,6 +678,10 @@ pub fn collect_all_segments(
             }
             crate::config::SegmentId::Update => {
                 let segment = UpdateSegment::new();
+                segment.collect(input)
+            }
+            crate::config::SegmentId::Mcp => {
+                let segment = McpSegment::new();
                 segment.collect(input)
             }
         };

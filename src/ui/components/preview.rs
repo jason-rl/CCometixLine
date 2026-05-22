@@ -183,6 +183,18 @@ impl PreviewComponent {
                         map
                     },
                 },
+                SegmentId::Mcp => SegmentData {
+                    primary: "github, context7".to_string(),
+                    secondary: "".to_string(),
+                    metadata: {
+                        let mut map = HashMap::new();
+                        map.insert(
+                            "mcp_servers".to_string(),
+                            "context7\u{1f}github".to_string(),
+                        );
+                        map
+                    },
+                },
             };
 
             segments_data.push((segment_config.clone(), mock_data));

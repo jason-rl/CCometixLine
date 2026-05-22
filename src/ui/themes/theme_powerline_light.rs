@@ -250,3 +250,21 @@ pub fn usage_segment() -> SegmentConfig {
         },
     }
 }
+
+pub fn mcp_segment() -> SegmentConfig {
+    SegmentConfig {
+        id: SegmentId::Mcp,
+        enabled: false,
+        icon: IconConfig {
+            plain: "🔌".to_string(),
+            nerd_font: "\u{f06a5}".to_string(),
+        },
+        colors: ColorConfig {
+            icon: Some(AnsiColor::Color16 { c16: 7 }),
+            text: Some(AnsiColor::Color16 { c16: 7 }),
+            background: None,
+        },
+        styles: TextStyleConfig::default(),
+        options: HashMap::new(),
+    }
+}

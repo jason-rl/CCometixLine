@@ -73,6 +73,7 @@ pub enum SegmentId {
     Session,
     OutputStyle,
     Update,
+    Mcp,
 }
 
 // Legacy compatibility structure

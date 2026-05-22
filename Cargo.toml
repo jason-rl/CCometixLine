@@ -17,6 +17,7 @@ clap = { version = "4.0", features = ["derive"] }
 toml = "1.0"
 
 ratatui = "0.30"
+unicode-width = "0.2"
 crossterm = "0.29"
 ansi_term = "0.12"
 ansi-to-tui = "8.0"
