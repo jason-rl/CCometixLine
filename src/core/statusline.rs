@@ -1,55 +1,63 @@
 use crate::config::{AnsiColor, Config, SegmentConfig, StyleMode};
 use crate::core::segments::SegmentData;
 
-/// Strip ANSI escape sequences and return visible text length (in chars, not cells).
-fn visible_width(text: &str) -> usize {
+/// Strip ANSI/OSC escape sequences from `text`, returning only the visible characters.
+fn strip_escapes(text: &str) -> String {
     let mut visible = String::new();
-    let mut in_escape = false;
     let mut chars = text.chars().peekable();
-
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            // Start of ANSI escape sequence
-            in_escape = true;
-            // Skip the [ character
-            if chars.peek() == Some(&'[') {
-                chars.next();
-            }
-        } else if in_escape {
-            // Skip until we find the end of the escape sequence (letter)
-            if ch.is_alphabetic() {
-                in_escape = false;
-            }
-        } else {
-            // Regular character
+        if ch != '\x1b' {
             visible.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some(&'[') => {
+                // CSI sequence (\x1b[...X): skip until first alphabetic char
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(&']') => {
+                // OSC sequence (\x1b]...\x07 or \x1b]...\x1b\): skip until BEL or ST
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {} // bare ESC or other sequence: skip the ESC, leave the next char
         }
     }
-
-    visible.chars().count()
+    visible
 }
 
-/// Strip ANSI escape sequences and return terminal cell width (emoji = 2 cells).
+/// Strip escape sequences and return visible text length (in chars, not cells).
+fn visible_width(text: &str) -> usize {
+    strip_escapes(text).chars().count()
+}
+
+/// Strip escape sequences and return terminal cell width (emoji = 2 cells).
 fn display_width(text: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    let mut visible = String::new();
-    let mut in_escape = false;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            in_escape = true;
-            if chars.peek() == Some(&'[') {
-                chars.next();
-            }
-        } else if in_escape {
-            if ch.is_alphabetic() {
-                in_escape = false;
-            }
-        } else {
-            visible.push(ch);
-        }
+    UnicodeWidthStr::width(strip_escapes(text).as_str())
+}
+
+/// Wrap `text` in an OSC 8 hyperlink if `url` is `Some`.
+/// The link surrounds only the primary text, not the icon or secondary content,
+/// so clicking lands on the branch name / usage value rather than the whole segment.
+fn wrap_hyperlink(text: String, url: Option<&str>) -> String {
+    match url {
+        Some(u) => format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", u, text),
+        None => text,
     }
-    UnicodeWidthStr::width(visible.as_str())
 }
 
 pub struct StatusLineGenerator {
@@ -404,6 +412,10 @@ impl StatusLineGenerator {
                 )
                 .replace("\x1b[0m", "")
             };
+            let text_styled = wrap_hyperlink(
+                text_styled,
+                data.metadata.get("hyperlink_url").map(|s| s.as_str()),
+            );
 
             let mut segment_content = format!(" {} {} ", icon_colored, text_styled);
 
@@ -432,6 +444,10 @@ impl StatusLineGenerator {
                     config.styles.text_bold,
                 )
             };
+            let text_styled = wrap_hyperlink(
+                text_styled,
+                data.metadata.get("hyperlink_url").map(|s| s.as_str()),
+            );
 
             let mut segment = format!("{} {}", icon_colored, text_styled);
 

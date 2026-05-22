@@ -251,8 +251,15 @@ impl Segment for UsageSegment {
         let primary = format!("{}%", five_hour_percent);
         let secondary = format!("· {}", Self::format_reset_time(resets_at.as_deref()));
 
+        let console_url = segment_config
+            .and_then(|sc| sc.options.get("console_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("https://claude.ai/settings/usage")
+            .to_string();
+
         let mut metadata = HashMap::new();
         metadata.insert("dynamic_icon".to_string(), dynamic_icon);
+        metadata.insert("hyperlink_url".to_string(), console_url);
         metadata.insert(
             "five_hour_utilization".to_string(),
             five_hour_util.to_string(),

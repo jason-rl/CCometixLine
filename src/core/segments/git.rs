@@ -314,6 +314,147 @@ impl GitSegment {
         }
     }
 
+    /// Returns the GitHub HTTPS branch URL if the tracking remote is a GitHub remote
+    /// and the remote-tracking ref exists locally. Returns `None` (silently) otherwise.
+    fn get_github_branch_url(&self, working_dir: &str, branch: &str) -> Option<String> {
+        let remote = self.get_tracking_remote(working_dir, branch)?;
+        let remote_url = self.get_remote_url(working_dir, &remote)?;
+        let (owner, repo) = Self::parse_github_owner_repo(&remote_url)?;
+        let remote_branch = self.get_remote_branch_name(working_dir, branch);
+        if !self.remote_tracking_ref_exists(working_dir, &remote, &remote_branch) {
+            return None;
+        }
+        Some(format!(
+            "https://github.com/{}/{}/tree/{}",
+            owner,
+            repo,
+            Self::percent_encode_path(&remote_branch),
+        ))
+    }
+
+    /// Percent-encode a URL path segment per RFC 3986, preserving unreserved chars
+    /// (`A-Z a-z 0-9 - _ . ~`) and `/` (so `feat/my-branch` stays readable).
+    fn percent_encode_path(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 8);
+        for &b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                    out.push(b as char)
+                }
+                _ => {
+                    out.push('%');
+                    out.push(
+                        char::from_digit((b >> 4) as u32, 16)
+                            .unwrap()
+                            .to_ascii_uppercase(),
+                    );
+                    out.push(
+                        char::from_digit((b & 0xf) as u32, 16)
+                            .unwrap()
+                            .to_ascii_uppercase(),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    fn get_tracking_remote(&self, working_dir: &str, branch: &str) -> Option<String> {
+        let key = format!("branch.{}.remote", branch);
+        let output = Command::new("git")
+            .args(["--no-optional-locks", "config", "--get", &key])
+            .current_dir(working_dir)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let remote = String::from_utf8(output.stdout).ok()?.trim().to_string();
+            if !remote.is_empty() {
+                return Some(remote);
+            }
+        }
+        None
+    }
+
+    fn get_remote_url(&self, working_dir: &str, remote: &str) -> Option<String> {
+        let output = Command::new("git")
+            .args(["--no-optional-locks", "remote", "get-url", remote])
+            .current_dir(working_dir)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+        None
+    }
+
+    /// Parse GitHub remote URLs into `(owner, repo)`. Returns `None` for non-GitHub remotes.
+    ///
+    /// Supported formats:
+    /// - SSH scp-style: `git@github.com:owner/repo[.git]`
+    /// - SSH URL:       `ssh://git@github.com/owner/repo[.git]`
+    /// - HTTPS:         `https://github.com/owner/repo[.git]`
+    fn parse_github_owner_repo(url: &str) -> Option<(String, String)> {
+        let url = url.trim();
+        // Match on exact host prefixes to avoid false-positives like `notgithub.com`
+        let path = url
+            .strip_prefix("git@github.com:")
+            .or_else(|| url.strip_prefix("https://github.com/"))
+            .or_else(|| url.strip_prefix("http://github.com/"))
+            .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+        let path = path.trim_end_matches('/').trim_end_matches(".git");
+        let slash = path.find('/')?;
+        let owner = &path[..slash];
+        // Take only the first two components; ignore sub-paths like owner/repo/extra
+        let repo = path[slash + 1..].split('/').next()?;
+        if owner.is_empty() || repo.is_empty() {
+            return None;
+        }
+        Some((owner.to_string(), repo.to_string()))
+    }
+
+    /// Returns the remote branch name from `branch.<name>.merge`, defaulting to the
+    /// local branch name if the config key is absent.
+    fn get_remote_branch_name(&self, working_dir: &str, branch: &str) -> String {
+        let key = format!("branch.{}.merge", branch);
+        if let Ok(output) = Command::new("git")
+            .args(["--no-optional-locks", "config", "--get", &key])
+            .current_dir(working_dir)
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(merge_ref) = String::from_utf8(output.stdout) {
+                    let merge_ref = merge_ref.trim();
+                    if let Some(name) = merge_ref.strip_prefix("refs/heads/") {
+                        return name.to_string();
+                    }
+                    if !merge_ref.is_empty() {
+                        return merge_ref.to_string();
+                    }
+                }
+            }
+        }
+        branch.to_string()
+    }
+
+    fn remote_tracking_ref_exists(&self, working_dir: &str, remote: &str, branch: &str) -> bool {
+        let ref_path = format!("refs/remotes/{}/{}", remote, branch);
+        Command::new("git")
+            .args([
+                "--no-optional-locks",
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &ref_path,
+            ])
+            .current_dir(working_dir)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
     fn get_sha(&self, working_dir: &str) -> Option<String> {
         let output = Command::new("git")
             .args(["--no-optional-locks", "rev-parse", "--short=7", "HEAD"])
@@ -366,6 +507,12 @@ impl Segment for GitSegment {
 
         if let Some(ref sha) = git_info.sha {
             status_parts.push(sha.clone());
+        }
+
+        // Add GitHub branch URL for OSC 8 hyperlink if the tracking remote is GitHub
+        // and the remote-tracking ref exists locally. Silently skipped otherwise.
+        if let Some(url) = self.get_github_branch_url(&input.workspace.current_dir, &primary) {
+            metadata.insert("hyperlink_url".to_string(), url);
         }
 
         Some(SegmentData {
@@ -456,7 +603,6 @@ mod tests {
     fn test_derive_repo_basename_empty() {
         assert_eq!(derive_repo_basename("", "/any/cwd"), None);
     }
-
 
     #[test]
     fn test_select_head_ref_prefers_local_branch() {

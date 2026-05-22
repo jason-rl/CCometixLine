@@ -270,20 +270,34 @@ fn rgb(text: &str, color: (u8, u8, u8)) -> String {
 fn display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     let mut visible = String::new();
-    let mut in_escape = false;
     let mut chars = s.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            in_escape = true;
-            if chars.peek() == Some(&'[') {
-                chars.next();
-            }
-        } else if in_escape {
-            if ch.is_alphabetic() {
-                in_escape = false;
-            }
-        } else {
+        if ch != '\x1b' {
             visible.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some(&'[') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(&']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     UnicodeWidthStr::width(visible.as_str())
