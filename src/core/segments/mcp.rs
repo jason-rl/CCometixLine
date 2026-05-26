@@ -120,13 +120,13 @@ pub fn enabled_mcp_servers(cwd: &str) -> Vec<String> {
         // 2. cwd/.mcp.json — project-scoped, gated by above sets and disabled list
         if let Ok(c2) = std::fs::read_to_string(std::path::Path::new(cwd).join(".mcp.json")) {
             if let Ok(v2) = serde_json::from_str::<serde_json::Value>(&c2) {
-                if let Some(obj) = v2.get("mcpServers").and_then(|v| v.as_object()) {
-                    for key in obj.keys() {
-                        if !disabled_set.contains(key)
-                            && (enable_all || enabled_set.contains(key))
-                            && !project_disabled.contains(key)
+                if let Some(keys) = mcp_server_map(&v2) {
+                    for key in keys {
+                        if !disabled_set.contains(&key)
+                            && (enable_all || enabled_set.contains(&key))
+                            && !project_disabled.contains(&key)
                         {
-                            servers.insert(key.clone());
+                            servers.insert(key);
                         }
                     }
                 }
@@ -171,12 +171,12 @@ pub fn enabled_mcp_servers(cwd: &str) -> Vec<String> {
                 let mcp_json = entry.path().join(".mcp.json");
                 if let Ok(c3) = std::fs::read_to_string(&mcp_json) {
                     if let Ok(v3) = serde_json::from_str::<serde_json::Value>(&c3) {
-                        if let Some(obj) = v3.get("mcpServers").and_then(|v| v.as_object()) {
-                            for server_key in obj.keys() {
+                        if let Some(keys) = mcp_server_map(&v3) {
+                            for server_key in keys {
                                 // Plugin servers are disabled via "plugin:<name>:<key>" form
                                 let plugin_id = format!("plugin:{}:{}", name, server_key);
                                 if !project_disabled.contains(&plugin_id) {
-                                    servers.insert(server_key.clone());
+                                    servers.insert(server_key);
                                 }
                             }
                         }
@@ -405,6 +405,29 @@ pub fn render_servers_lines(
             lines
         }
     }
+}
+
+/// Return the server-name keys from a `.mcp.json` value, supporting both:
+///   - Wrapped:   `{"mcpServers": {"<name>": {…}}}`
+///   - Top-level: `{"<name>": {"command": …}}` or `{"<name>": {"url": …}}`
+///
+/// Top-level keys whose value is not a JSON object or lacks `command`/`url` are
+/// skipped (guards against `$schema`, comments, etc.).
+fn mcp_server_map(v: &serde_json::Value) -> Option<Vec<String>> {
+    if let Some(obj) = v.get("mcpServers").and_then(|v| v.as_object()) {
+        return Some(obj.keys().cloned().collect());
+    }
+    let obj = v.as_object()?;
+    let keys: Vec<String> = obj
+        .iter()
+        .filter(|(_, val)| {
+            val.as_object()
+                .map(|o| o.contains_key("command") || o.contains_key("url"))
+                .unwrap_or(false)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    (!keys.is_empty()).then_some(keys)
 }
 
 // ── Brand substitution ────────────────────────────────────────────────────────
@@ -1156,5 +1179,67 @@ mod tests {
         assert!(r > 100 && r < 210, "r={r}");
         assert!((r as i32 - g as i32).abs() < 70, "r={r} g={g}");
         assert!((r as i32 - b as i32).abs() < 70, "r={r} b={b}");
+    }
+
+    // ── mcp_server_map ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_server_map_wrapped_format() {
+        let v: serde_json::Value = serde_json::json!({"mcpServers": {"slack": {"type": "http", "url": "https://mcp.slack.com/mcp"}}});
+        let mut keys = mcp_server_map(&v).expect("should find servers");
+        keys.sort();
+        assert_eq!(keys, vec!["slack"]);
+    }
+
+    #[test]
+    fn test_mcp_server_map_top_level_command_format() {
+        let v: serde_json::Value = serde_json::json!({"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}});
+        let mut keys = mcp_server_map(&v).expect("should find servers");
+        keys.sort();
+        assert_eq!(keys, vec!["context7"]);
+    }
+
+    #[test]
+    fn test_mcp_server_map_top_level_url_format() {
+        let v: serde_json::Value =
+            serde_json::json!({"linear": {"type": "http", "url": "https://mcp.linear.app/mcp"}});
+        let mut keys = mcp_server_map(&v).expect("should find servers");
+        keys.sort();
+        assert_eq!(keys, vec!["linear"]);
+    }
+
+    #[test]
+    fn test_mcp_server_map_ignores_non_server_keys() {
+        // $schema and a comment string must not be treated as server entries
+        let v: serde_json::Value = serde_json::json!({
+            "$schema": "https://example.com/schema.json",
+            "context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}
+        });
+        let mut keys = mcp_server_map(&v).expect("should find servers");
+        keys.sort();
+        assert_eq!(keys, vec!["context7"]);
+    }
+
+    #[test]
+    fn test_mcp_server_map_returns_none_for_no_servers() {
+        let v: serde_json::Value = serde_json::json!({"comment": "not a server config"});
+        assert!(mcp_server_map(&v).is_none());
+    }
+
+    /// Real-filesystem integration check. Run manually with:
+    ///   cargo test -- --ignored integration_context7_detected
+    #[test]
+    #[ignore]
+    fn integration_context7_detected() {
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let servers = enabled_mcp_servers(&cwd);
+        assert!(
+            servers.contains(&"context7".to_string()),
+            "context7 not found in: {:?}",
+            servers
+        );
     }
 }
